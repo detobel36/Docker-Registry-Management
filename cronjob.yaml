@@ -1,0 +1,32 @@
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: registry-auto-clean
+  annotations:
+    description: "cronjob to clean private docker registry. Replace number in args to whatever number of recent builds you want in your registry."
+spec:
+  schedule: "0 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: drm-cli
+            image: randomcitizen1705/docker-registry-management 
+            imagePullPolicy: IfNotPresent
+            command: ["python"]
+            args:
+            - "drm-cli"
+            - "--delete-all-but-keep-last"
+            - "3"
+            env:
+            - name: 'DOCKER_USER' 
+              value: 'xxxxxxxxxxxxx'
+            - name: 'DOCKER_PASS'
+              value: 'xxxxxxxxxxxxx'
+            - name: 'REPO'
+              value: 'https://registry.example.com'
+          restartPolicy: Never
+
