@@ -2,113 +2,156 @@
 
 import argparse, requests, os
 from dotenv import load_dotenv
+from sys import stderr
+from requests.exceptions import SSLError
+from urllib3 import disable_warnings
+from urllib3.exceptions import InsecureRequestWarning
 
-load_dotenv()                                                                                       # Loading env variables from .env file
+# Loading env variables from .env file
+load_dotenv()
 
 DOCKER_USER = os.getenv('DOCKER_USER')
 DOCKER_PASS = os.getenv('DOCKER_PASS')
 REPO = os.getenv('REPO')
 
-def list_repo(p):                                                                                   #if p true then print on screen
-    URL = f'{REPO}/v2/_catalog'
-    req_status = requests.get(URL, auth=(DOCKER_USER,DOCKER_PASS))                                  # Saving request status
-    if req_status.ok:                                                                               # checking request status, if 2xx then proceeding
-        repos_json = requests.get(URL, auth=(DOCKER_USER,DOCKER_PASS)).json()                       # Returning json response
-        repos = []                                                                                  # Creting an empty list
-        for repo in repos_json['repositories']:                                                 
-            repos.append(repo)                                                                      # Appending repo variable to the list
-            if p is True:
-                print(repo)
+def do_get_query(url, headers=None, verifyCertificate=True):
+    if not verifyCertificate:
+        disable_warnings(InsecureRequestWarning)
+    try:
+        result = requests.get(url, auth=(DOCKER_USER,DOCKER_PASS), headers=headers, verify=verifyCertificate)
+    except SSLError as exception:
+        print('Request refused (insecure). Enable option `-k` to bypass')
+        print(exception)
+        exit(1)
+    return result
+
+def list_repo(printResult, verifyCertificate):
+    url = f'{REPO}/v2/_catalog'
+    req_status = do_get_query(url, verifyCertificate=verifyCertificate)
+    # checking request status, if 2xx then proceeding
+    if req_status.ok:
+        # Returning json response
+        repos_json = req_status.json()
+        # Creting an empty list
+        repos = []
+        if printResult:
+            print("List repos:")
+        for repo in repos_json['repositories']:
+            # Appending repo variable to the list
+            repos.append(repo)
+            if printResult:
+                print(f'- {repo}')
         return repos
     else:
         print(f'Something went wrong.\nError Code {req_status.status_code}')
 
 
-def list_tags(*repos):                                                                              # *arg converts provided args to list
+# *arg converts provided args to list
+def list_tags(verifyCertificate, *repos):
     for repo in repos:
-        URL = f'{REPO}/v2/{repo}/tags/list'
-        req_status = requests.get(URL, auth=(DOCKER_USER,DOCKER_PASS))                              # Saving request status
-        if req_status.ok:                                                                           # Checking request status, if 2xx then proceeding
-            repo_tags = requests.get(URL, auth=(DOCKER_USER,DOCKER_PASS)).json()
+        url = f'{REPO}/v2/{repo}/tags/list'
+        req_status = do_get_query(url, verifyCertificate=verifyCertificate)
+        # Checking request status, if 2xx then proceeding
+        if req_status.ok:
+            repo_tags = req_status.json()
             print(f'Reposiroty: {repo}')
             print(f'Tags:')
-            if repo_tags['tags'] is not None:                                                       # Making sure if repo has tags in it
+            # Making sure if repo has tags in it
+            if repo_tags['tags'] is not None:
                 tags = []
                 for tag in repo_tags['tags']:
                     print(f'     {tag}')
-                    tags.append(tag,)                                                               # Using tag, to make sure tags are saved in list properly
-                return tags 
+                    # Using tag, to make sure tags are saved in list properly
+                    tags.append(tag,)
+                return tags
             else:
                 return []
         else:
             print(f'Something went wrong.\nError Code {req_status.status_code}')
 
 
-def delete_tag(repo, tag):
-    URL = f'{REPO}/v2/{repo}/manifests/{tag}'
+def delete_tag(repo, tag, verifyCertificate=True):
+    url = f'{REPO}/v2/{repo}/manifests/{tag}'
     headers = {'Accept': 'application/vnd.docker.distribution.manifest.v2+json'}
-    req_status = requests.get(URL, auth=(DOCKER_USER,DOCKER_PASS))
+    req_status = do_get_query(url, headers, verifyCertificate)
     if req_status.ok:
-        sha_header = requests.get(URL, auth=(DOCKER_USER,DOCKER_PASS), headers=headers).headers
+        sha_header = req_status.headers
         sha_digest = sha_header['Docker-Content-Digest']
         if sha_digest:
             print('Deleting Tag, Please Wait')
-            DEL_URL = f'{REPO}/v2/{repo}/manifests/{sha_digest}'
-            delete_tag = requests.delete(DEL_URL, auth=(DOCKER_USER,DOCKER_PASS), headers=headers)
+            del_url = f'{REPO}/v2/{repo}/manifests/{sha_digest}'
+            delete_tag = requests.delete(del_url,
+                auth=(DOCKER_USER,DOCKER_PASS), headers=headers, verify=verifyCertificate)
             if delete_tag.ok:
                 print(f'Tag {tag} deleted')
             else:
-                print(f'Something went wrong.\nError Code {req_status.status_code}')
+                print(f'Something went wrong when deleting.\nError Code {req_status.status_code}')
     else:
         print(f'Something went wrong.\nError Code {req_status.status_code}')
 
 
-def delete_but_keep(days):
-    for repo in list_repo(p=False):
-        repo_tags = list_tags(repo)
+def delete_but_keep(days, verifyCertificate):
+    for repo in list_repo(False):
+        repo_tags = list_tags(allowInsecure, repo)
         if len(repo_tags) > days:
             diff = len(repo_tags) - days
             for tag in repo_tags[:diff]:
                 delete_tag(repo, tag)
 
 
-# # Create the parser
-parser = argparse.ArgumentParser(prog="drm-cli",
-                                    description='Manage repositories in a registry')
+def initialize_argparse():
+    # # Create the parser
+    parser = argparse.ArgumentParser(prog="drm-cli",
+                                        description='Manage repositories in a registry')
 
-parser.add_argument('-l', '--list',
-                        help='List repos in the registry',
-                        action='store_true')
+    parser.add_argument('-l', '--list',
+                            help='List repos in the registry',
+                            action='store_true')
 
-parser.add_argument('-t', '--tags',
-                        metavar='REPO',
-                        help='List tags in a repo in the registry',
-                        nargs='+')
+    parser.add_argument('-k', '--insecure',
+                            help='Allow insecure connection',
+                            action='store_true',
+                            default=False)
 
-parser.add_argument('-d', '--delete',
-                        metavar='REPO/TAG',
-                        help='Delete tags in a repo in the registry',
-                        nargs=2)
+    parser.add_argument('-t', '--tags',
+                            metavar='REPO',
+                            help='List tags in a repo in the registry',
+                            nargs='+')
 
-parser.add_argument('-dk', '--delete-all-but-keep-last',
-                        metavar='Tags',
-                        type=int,
-                        help='Delete all tags in a repo in the registry except specified recent number of tags',
-                        nargs=1)
+    parser.add_argument('-d', '--delete',
+                            metavar='REPO/TAG',
+                            help='Delete tags in a repo in the registry',
+                            nargs=2)
 
-# # Execute the parse_args() method
-args = parser.parse_args()
+    parser.add_argument('-dk', '--delete-all-but-keep-last',
+                            metavar='Tags',
+                            type=int,
+                            help='Delete all tags in a repo in the registry except specified recent number of tags',
+                            nargs=1)
 
-if args.list:
-    list_repo(p=True)
-elif args.tags:
-    for tag in args.tags:
-        list_tags(tag)
-elif args.delete:
-    repo = args.delete[0]
-    tag = args.delete[1]
-    delete_tag(repo, tag)
-elif args.delete_all_but_keep_last:
-    ntags = args.delete_all_but_keep_last[:1]                                                   # type=int not working for some reason, its saving narg as a list
-    for tags in ntags:
-        delete_but_keep(tags)
+    # # Execute the parse_args() method
+    return parser
+
+def run_parser(parser):
+    args = parser.parse_args()
+    if args.list:
+        list_repo(True, not args.insecure)
+    elif args.tags:
+        for tag in args.tags:
+            list_tags(not args.insecure, tag)
+    elif args.delete:
+        repo = args.delete[0]
+        tag = args.delete[1]
+        delete_tag(repo, tag, not args.insecure)
+    elif args.delete_all_but_keep_last:
+        # type=int not working for some reason, its saving narg as a list
+        ntags = args.delete_all_but_keep_last[:1]
+        for tags in ntags:
+            delete_but_keep(tags, not args.insecure)
+    else:
+        parser.print_help(stderr)
+
+
+if __name__ == "__main__":
+    parser = initialize_argparse()
+    run_parser(parser)
